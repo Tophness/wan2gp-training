@@ -1,0 +1,2 @@
+toml
+gradio==5.50.0
