@@ -13,7 +13,7 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Musubi Tuner Training"
-        self.version = "1.0.0"
+        self.version = "1.1.0"
         self.description = "Integrates Kohya-ss Musubi Tuner for Wan2.1 training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
@@ -38,35 +38,40 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
     def setup_ui(self):
         self.add_tab(
             tab_id="musubi_training",
-            label="Training",
+            label="Training (Musubi)",
             component_constructor=self.create_ui,
             position=2 
         )
 
     def create_ui(self):
-        path = self.config.get("install_path", "")
-        is_installed = False
-        
-        if path and os.path.exists(os.path.join(path, "src", "musubi_tuner", "gui", "gui.py")):
-            is_installed = True
+        current_path = self.config.get("install_path", "")
+        path_state = gr.State(value=current_path)
 
-        if is_installed:
-            return self.render_musubi_ui(path)
-        else:
-            return self.render_installer_ui(path)
+        @gr.render(inputs=[path_state])
+        def render_content(path):
+            is_valid = False
+            if path and os.path.isdir(path):
+                if os.path.exists(os.path.join(path, "src", "musubi_tuner", "gui", "gui.py")):
+                    is_valid = True
+            
+            if is_valid:
+                self.render_musubi_ui(path, path_state)
+            else:
+                self.render_installer_ui(path, path_state)
 
-    def render_installer_ui(self, current_path):
+    def render_installer_ui(self, current_path, path_state):
         with gr.Blocks() as installer:
             gr.Markdown("## Musubi Tuner Installation")
             gr.Markdown("Musubi Tuner is required to enable training features. You can install it automatically or select an existing folder.")
             
             with gr.Row():
+                default_path = os.path.join(os.path.dirname(__file__), DEFAULT_INSTALL_DIR_NAME)
                 path_input = gr.Textbox(
                     label="Installation Path (Existing or Target for new install)", 
-                    value=current_path or os.path.join(os.path.dirname(__file__), DEFAULT_INSTALL_DIR_NAME),
+                    value=current_path or default_path,
                     scale=4
                 )
-                browse_btn = gr.Button("Save Path / Refresh", scale=1)
+                save_refresh_btn = gr.Button("Save Path & Load", scale=1)
 
             with gr.Row():
                 install_btn = gr.Button("Clone & Install Musubi Tuner", variant="primary")
@@ -75,7 +80,8 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
 
             def install_musubi(target_path):
                 if not target_path:
-                    return "Please specify a path."
+                    yield "Please specify a path."
+                    return
                 
                 target_path = os.path.abspath(target_path)
 
@@ -97,18 +103,26 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
                         return
                 
                 self.save_config(target_path)
-                yield "Installation Complete. Please restart Wan2GP to load the UI."
+                yield "Installation Complete. Loading interface..."
 
-            def save_and_refresh(path):
+            def save_only(path):
                 self.save_config(path)
-                return "Path saved. If valid, restart Wan2GP to load the interface."
+                return "Path saved. Attempting to load..."
 
-            install_btn.click(install_musubi, inputs=[path_input], outputs=[status_box])
-            browse_btn.click(save_and_refresh, inputs=[path_input], outputs=[status_box])
+            install_btn.click(
+                install_musubi, inputs=[path_input], outputs=[status_box]
+            ).success(
+                fn=lambda p: p, inputs=[path_input], outputs=[path_state]
+            )
 
-        return installer
+            save_refresh_btn.click(
+                save_only, inputs=[path_input], outputs=[status_box]
+            ).then(
+                fn=lambda p: p, inputs=[path_input], outputs=[path_state]
+            )
 
-    def render_musubi_ui(self, musubi_path):
+    def render_musubi_ui(self, musubi_path, path_state):
+
         src_path = os.path.join(musubi_path, "src")
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
@@ -124,17 +138,74 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
 
                 def forced_i18n(key):
                     return I18N_DATA.get("en", {}).get(key, key)
-
                 musubi_gui.i18n = forced_i18n
 
             except ImportError as e:
                 os.chdir(original_cwd)
-                return gr.Markdown(f"## Error Loading Musubi\nCould not import musubi modules. Setup may be corrupt.\nError: {e}")
+                gr.Markdown(f"## Error Loading Musubi\nCould not import musubi modules. Setup may be corrupt.\nError: {e}")
+                return
 
             try:
-                demo = musubi_gui.construct_ui()
-                
-                gr.Markdown(f"--- \n*Musubi Tuner loaded from: {musubi_path}*")
+                musubi_gui.construct_ui()
+
+                gr.Markdown("---")
+                with gr.Accordion("Musubi Installation Management", open=False):
+                    with gr.Row(variant="panel"):
+                        path_edit = gr.Textbox(label="Installation Path", value=musubi_path, scale=4)
+                        update_path_btn = gr.Button("Save Path", scale=1)
+                        git_update_btn = gr.Button("Update from GitHub", scale=1)
+                    
+                    update_log = gr.Textbox(label="Logs", visible=False, lines=5)
+
+                    def do_update_path(new_path):
+                        self.save_config(new_path)
+                        return new_path
+
+                    def do_git_update():
+                        log = []
+                        try:
+                            log.append("Executing: git pull")
+                            result = subprocess.run(
+                                ["git", "pull"], 
+                                cwd=musubi_path, 
+                                capture_output=True, 
+                                text=True
+                            )
+                            log.append(result.stdout)
+                            if result.stderr:
+                                log.append(f"STDERR: {result.stderr}")
+                            
+                            if result.returncode != 0:
+                                log.append("Git pull failed.")
+                                return "\n".join(log), gr.update(visible=True)
+
+                            req_path = os.path.join(musubi_path, "requirements.txt")
+                            if os.path.exists(req_path):
+                                log.append("\nUpdating requirements...")
+                                try:
+                                    pip_res = subprocess.run(
+                                        [sys.executable, "-m", "pip", "install", "-r", req_path],
+                                        capture_output=True,
+                                        text=True
+                                    )
+                                    log.append(pip_res.stdout)
+                                    if pip_res.returncode != 0:
+                                        log.append(f"Pip error: {pip_res.stderr}")
+                                except Exception as e:
+                                    log.append(f"Pip exception: {e}")
+                            
+                            log.append("\nUpdate process finished.")
+
+                        except Exception as e:
+                            log.append(f"Critical Error: {str(e)}")
+                        
+                        return "\n".join(log), gr.update(visible=True)
+
+                    update_path_btn.click(
+                        do_update_path, inputs=[path_edit], outputs=[path_state]
+                    )
+
+                    git_update_btn.click(do_git_update, outputs=[update_log, update_log])
                 
             except Exception as e:
                 import traceback
@@ -143,8 +214,6 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
 
         finally:
             os.chdir(original_cwd)
-            
-        return None 
 
     def on_tab_select(self, state):
         pass
