@@ -13,7 +13,7 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Musubi Tuner Training"
-        self.version = "1.1.0"
+        self.version = "1.1.1"
         self.description = "Integrates Kohya-ss Musubi Tuner for Wan2.1 training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
@@ -93,13 +93,17 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
                         yield f"Error cloning git repo: {e}"
                         return
 
-                req_file = os.path.join(target_path, "requirements.txt")
-                if os.path.exists(req_file):
+                pyproject_file = os.path.join(target_path, "pyproject.toml")
+                if os.path.exists(pyproject_file):
                     try:
-                        yield "Installing requirements (this may take a while)..."
-                        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
+                        yield "Installing dependencies via 'pip install -e .' (this may take a while)..."
+                        # Run pip install -e . inside the target directory
+                        subprocess.check_call(
+                            [sys.executable, "-m", "pip", "install", "-e", "."], 
+                            cwd=target_path
+                        )
                     except Exception as e:
-                        yield f"Error installing requirements: {e}"
+                        yield f"Error installing dependencies: {e}"
                         return
                 
                 self.save_config(target_path)
@@ -179,12 +183,13 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
                                 log.append("Git pull failed.")
                                 return "\n".join(log), gr.update(visible=True)
 
-                            req_path = os.path.join(musubi_path, "requirements.txt")
-                            if os.path.exists(req_path):
-                                log.append("\nUpdating requirements...")
+                            pyproject_path = os.path.join(musubi_path, "pyproject.toml")
+                            if os.path.exists(pyproject_path):
+                                log.append("\nUpdating dependencies (pip install -e .)...")
                                 try:
                                     pip_res = subprocess.run(
-                                        [sys.executable, "-m", "pip", "install", "-r", req_path],
+                                        [sys.executable, "-m", "pip", "install", "-e", "."],
+                                        cwd=musubi_path,
                                         capture_output=True,
                                         text=True
                                     )
