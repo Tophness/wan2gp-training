@@ -13,7 +13,7 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Musubi Tuner Training"
-        self.version = "1.1.1"
+        self.version = "1.1.2"
         self.description = "Integrates Kohya-ss Musubi Tuner for Wan2.1 training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
@@ -38,7 +38,7 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
     def setup_ui(self):
         self.add_tab(
             tab_id="musubi_training",
-            label="Training (Musubi)",
+            label="Training",
             component_constructor=self.create_ui,
             position=2 
         )
