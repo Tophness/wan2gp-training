@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import traceback
 from shared.utils.plugins import WAN2GPPlugin
+from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running
 
 MUSUBI_REPO_URL = "https://github.com/kohya-ss/musubi-tuner.git"
 DEFAULT_INSTALL_DIR_NAME = "musubi-tuner"
@@ -14,7 +15,8 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Musubi Tuner Training"
-        self.version = "1.1.3"
+        self.plugin_id = "musubi_training"
+        self.version = "1.1.5"
         self.description = "Integrates Kohya-ss Musubi Tuner for Wan2.1 training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
@@ -37,12 +39,24 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
             json.dump(self.config, f, indent=4)
 
     def setup_ui(self):
+        self.request_component("state")
+        
         self.add_tab(
             tab_id="musubi_training",
             label="Training",
             component_constructor=self.create_ui,
             position=2 
         )
+
+    def acquire_gpu(self, state):
+        if any_GPU_process_running(state, self.plugin_id):
+            gr.Warning("Another Plugin is currently using the GPU. Training might fail due to VRAM constraints. It is recommended to restart WAN2GP.")
+            return
+
+        acquire_GPU_ressources(state, self.plugin_id, self.name, gr=gr)
+
+    def release_gpu(self, state):
+        release_GPU_ressources(state, self.plugin_id)
 
     def create_ui(self):
         current_path = self.config.get("install_path", "")
@@ -223,4 +237,7 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
             os.chdir(original_cwd)
 
     def on_tab_select(self, state):
-        pass
+        self.acquire_gpu(state)
+
+    def on_tab_deselect(self, state):
+        self.release_gpu(state)
