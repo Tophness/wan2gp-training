@@ -8,7 +8,7 @@ import traceback
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running
 
-MUSUBI_REPO_URL = "https://github.com/kohya-ss/musubi-tuner.git"
+MUSUBI_REPO_URL = "https://github.com/Tophness/musubi-tuner.git"
 DEFAULT_INSTALL_DIR_NAME = "musubi-tuner"
 
 class MusubiTrainingPlugin(WAN2GPPlugin):
@@ -16,7 +16,7 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
         super().__init__()
         self.name = "Musubi Tuner Training"
         self.plugin_id = "musubi_training"
-        self.version = "1.1.5"
+        self.version = "1.1.6"
         self.description = "Integrates Kohya-ss Musubi Tuner for Wan2.1 training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
@@ -162,11 +162,6 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
             os.chdir(musubi_path)
 
             import musubi_tuner.gui.gui as musubi_gui
-            from musubi_tuner.gui.i18n_data import I18N_DATA
-
-            def forced_i18n(key):
-                return I18N_DATA.get("en", {}).get(key, key)
-            musubi_gui.i18n = forced_i18n
             musubi_gui.construct_ui()
 
             gr.Markdown("---")
