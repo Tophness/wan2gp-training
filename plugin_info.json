@@ -1,0 +1,8 @@
+{
+  "name": "Musubi Tuner Training",
+  "author": "Tophness and Neires",
+  "version": "1.2",
+  "description": "Integrates Kohya-ss Musubi Tuner for training directly into Wan2GP.",
+  "date": "",
+  "wan2gp_version": ""
+}
