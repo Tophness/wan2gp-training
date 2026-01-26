@@ -21,10 +21,7 @@ def find_free_port():
 class MusubiTrainingPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
-        self.name = "Musubi Tuner Training"
         self.plugin_id = "musubi_training"
-        self.version = "1.2"
-        self.description = "Integrates Kohya-ss Musubi Tuner for training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
         self.musubi_process = None
@@ -179,3 +176,4 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
 
     def on_tab_deselect(self, state):
         self.release_gpu(state)
+
