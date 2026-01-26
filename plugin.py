@@ -5,21 +5,31 @@ import gradio as gr
 import subprocess
 import shutil
 import traceback
+import socket
+import time
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running
 
 MUSUBI_REPO_URL = "https://github.com/Tophness/musubi-tuner.git"
 DEFAULT_INSTALL_DIR_NAME = "musubi-tuner"
 
+def find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
 class MusubiTrainingPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Musubi Tuner Training"
         self.plugin_id = "musubi_training"
-        self.version = "1.1.6"
-        self.description = "Integrates Kohya-ss Musubi Tuner for Wan2.1 training directly into Wan2GP."
+        self.version = "1.2"
+        self.description = "Integrates Kohya-ss Musubi Tuner for training directly into Wan2GP."
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         self.config = self.load_config()
+        self.musubi_process = None
+        self.musubi_port = None
+        self.load_trigger = None 
 
     def load_config(self):
         if os.path.exists(self.config_file):
@@ -40,7 +50,6 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
 
     def setup_ui(self):
         self.request_component("state")
-        
         self.add_tab(
             tab_id="musubi_training",
             label="Training",
@@ -50,189 +59,123 @@ class MusubiTrainingPlugin(WAN2GPPlugin):
 
     def acquire_gpu(self, state):
         if any_GPU_process_running(state, self.plugin_id):
-            gr.Warning("Another Plugin is currently using the GPU. Training might fail due to VRAM constraints. It is recommended to restart WAN2GP.")
-            return
-
+            pass
         acquire_GPU_ressources(state, self.plugin_id, self.name, gr=gr)
 
     def release_gpu(self, state):
         release_GPU_ressources(state, self.plugin_id)
 
+    def _is_installed(self, path):
+        return path and os.path.exists(os.path.join(path, "src", "musubi_tuner", "gui", "gui.py"))
+
     def create_ui(self):
+        self.load_trigger = gr.State(False)
+        self.on_tab_outputs = [self.load_trigger]
+
         current_path = self.config.get("install_path", "")
-        is_ready = False
-        if current_path and os.path.isdir(current_path):
-            if os.path.exists(os.path.join(current_path, "src", "musubi_tuner", "gui", "gui.py")):
-                is_ready = True
         path_state = gr.State(value=current_path)
+        is_installed = self._is_installed(current_path)
 
-        if is_ready:
-            try:
-                self.render_musubi_ui(current_path, path_state)
-            except Exception as e:
-                trace = traceback.format_exc()
-                gr.Markdown(
-                    f"## Error Loading Training Interface\n"
-                    f"The installation path seems valid, but the module could not be loaded.\n\n"
-                    f"**Error:** {e}\n\n"
-                    f"```\n{trace}\n```\n\n"
-                    f"You may need to reinstall or check dependencies."
-                )
-                self.render_installer_ui(current_path, path_state)
-        else:
-            self.render_installer_ui(current_path, path_state)
-
-    def render_installer_ui(self, current_path, path_state):
-        with gr.Blocks() as installer:
-            if not current_path:
-                current_path = os.path.join(os.path.dirname(__file__), DEFAULT_INSTALL_DIR_NAME)
-
+        with gr.Column(visible=not is_installed) as installer_col:
             gr.Markdown("## Musubi Tuner Installation")
-            gr.Markdown("Musubi Tuner is required to enable training features. Please install it below.")
-            
+            gr.Markdown("Musubi Tuner is required to enable training features.")
             with gr.Row():
-                path_input = gr.Textbox(
-                    label="Installation Path (Target folder)", 
-                    value=current_path,
-                    scale=4
-                )
-                save_path_btn = gr.Button("Save Path", scale=1)
-
-            with gr.Row():
-                install_btn = gr.Button("Clone & Install Musubi Tuner", variant="primary")
-                
+                path_input = gr.Textbox(label="Installation Path", value=current_path or os.path.join(os.path.dirname(__file__), DEFAULT_INSTALL_DIR_NAME), scale=4)
+                install_btn = gr.Button("Clone & Install", variant="primary", scale=1)
             status_box = gr.Textbox(label="Installation Log", interactive=False, lines=6)
 
-            def install_musubi(target_path):
-                if not target_path:
-                    yield "Please specify a path."
-                    return
-                
-                target_path = os.path.abspath(target_path)
+        with gr.Column(visible=is_installed) as interface_col:
+            interface_html = gr.HTML(value="<div style='padding:20px; text-align:center'>Waiting for training interface to start...</div>")
+            with gr.Row():
+                refresh_btn = gr.Button("Refresh / Restart Interface", size="sm")
 
+        def install_musubi(target_path):
+            if not target_path:
+                yield "Please specify a path.", gr.update(), gr.update()
+                return
+            
+            target_path = os.path.abspath(target_path)
+            yield f"Starting installation to {target_path}...", gr.update(), gr.update()
+
+            try:
                 if not os.path.exists(os.path.join(target_path, ".git")):
-                    try:
-                        yield f"Cloning {MUSUBI_REPO_URL} into {target_path}..."
-                        subprocess.check_call(["git", "clone", MUSUBI_REPO_URL, target_path])
-                    except Exception as e:
-                        yield f"Error cloning git repo: {e}"
-                        return
-                else:
-                    yield f"Git repository already exists at {target_path}. Proceeding to install..."
-
-                pyproject_file = os.path.join(target_path, "pyproject.toml")
-                if os.path.exists(pyproject_file):
-                    try:
-                        yield "Installing dependencies via 'pip install -e .' (this may take a minute)..."
-                        subprocess.check_call(
-                            [sys.executable, "-m", "pip", "install", "-e", "."], 
-                            cwd=target_path
-                        )
-                    except Exception as e:
-                        yield f"Error installing dependencies: {e}"
-                        return
+                    subprocess.check_call(["git", "clone", MUSUBI_REPO_URL, target_path])
+                
+                pyproject = os.path.join(target_path, "pyproject.toml")
+                if os.path.exists(pyproject):
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", "."], cwd=target_path)
 
                 self.save_config(target_path)
-                yield "SUCCESS: Installation Complete!\n\nIMPORTANT: Please restart WanGP to load the training interface."
+                yield "Installation Complete!", gr.update(visible=False), gr.update(visible=True)
+            except Exception as e:
+                yield f"Error during installation: {e}", gr.update(), gr.update()
 
-            def save_only(path):
-                self.save_config(path)
-                return "Path saved. Please restart WanGP if you are changing a valid installation location."
+        install_btn.click(install_musubi, inputs=[path_input], outputs=[status_box, installer_col, interface_col]).success(
+            fn=lambda p: p, inputs=[path_input], outputs=[path_state]
+        ).success(
+            fn=lambda: True, outputs=[self.load_trigger]
+        )
 
-            install_btn.click(
-                install_musubi, inputs=[path_input], outputs=[status_box]
-            ).success(
-                fn=lambda p: p, inputs=[path_input], outputs=[path_state]
-            )
+        def launch_interface(triggered, path):
+            if not triggered:
+                return gr.update()
+            
+            if not self._is_installed(path):
+                return gr.update(value="<div style='color:red'>Musubi Tuner not found. Please install it.</div>")
 
-            save_path_btn.click(
-                save_only, inputs=[path_input], outputs=[status_box]
-            ).then(
-                fn=lambda p: p, inputs=[path_input], outputs=[path_state]
-            )
+            if self.musubi_process:
+                if self.musubi_process.poll() is None:
+                    return f'<iframe src="http://127.0.0.1:{self.musubi_port}" width="100%" height="1000px" style="border:none;"></iframe>'
+                else:
+                    self.musubi_process = None
 
-    def render_musubi_ui(self, musubi_path, path_state):
-        src_path = os.path.join(musubi_path, "src")
-        if src_path not in sys.path:
-            sys.path.insert(0, src_path)
-
-        original_cwd = os.getcwd()
-        
-        try:
-            os.chdir(musubi_path)
-
-            import musubi_tuner.gui.gui as musubi_gui
-            musubi_gui.construct_ui()
-
-            gr.Markdown("---")
-            with gr.Accordion("Musubi Installation Management", open=False):
-                with gr.Row(variant="panel"):
-                    path_edit = gr.Textbox(label="Installation Path", value=musubi_path, scale=4)
-                    update_path_btn = gr.Button("Save New Path", scale=1)
-                    git_update_btn = gr.Button("Update from GitHub", scale=1)
+            try:
+                self.musubi_port = find_free_port()
+                env = os.environ.copy()
+                env["GRADIO_SERVER_PORT"] = str(self.musubi_port)
+                env["PYTHONPATH"] = os.path.join(path, "src")
+                env["GRADIO_SERVER_NAME"] = "127.0.0.1" 
+                env["GRADIO_ANALYTICS_ENABLED"] = "False"
                 
-                update_log = gr.Textbox(label="Logs", visible=False, lines=5)
+                cmd = [sys.executable, os.path.join(path, "src/musubi_tuner/gui/gui.py")]
 
-                def do_update_path(new_path):
-                    self.save_config(new_path)
-                    return new_path, "Path saved. Please restart WanGP to load the new location."
+                creationflags = 0
+                if sys.platform == "win32":
+                    creationflags = subprocess.CREATE_NO_WINDOW
 
-                def do_git_update():
-                    log = []
-                    try:
-                        log.append("Executing: git pull")
-                        result = subprocess.run(
-                            ["git", "pull"], 
-                            cwd=musubi_path, 
-                            capture_output=True, 
-                            text=True
-                        )
-                        log.append(result.stdout)
-                        if result.stderr:
-                            log.append(f"STDERR: {result.stderr}")
-                        
-                        if result.returncode != 0:
-                            log.append("Git pull failed.")
-                            return "\n".join(log), gr.update(visible=True)
-
-                        pyproject_path = os.path.join(musubi_path, "pyproject.toml")
-                        if os.path.exists(pyproject_path):
-                            log.append("\nUpdating dependencies (pip install -e .)...")
-                            try:
-                                pip_res = subprocess.run(
-                                    [sys.executable, "-m", "pip", "install", "-e", "."],
-                                    cwd=musubi_path,
-                                    capture_output=True,
-                                    text=True
-                                )
-                                log.append(pip_res.stdout)
-                                if pip_res.returncode != 0:
-                                    log.append(f"Pip error: {pip_res.stderr}")
-                            except Exception as e:
-                                log.append(f"Pip exception: {e}")
-                        
-                        log.append("\nUpdate process finished. Please restart WanGP if code changes require it.")
-
-                    except Exception as e:
-                        log.append(f"Critical Error: {str(e)}")
-                    
-                    return "\n".join(log), gr.update(visible=True)
-
-                update_path_btn.click(
-                    do_update_path, inputs=[path_edit], outputs=[path_state, update_log]
-                ).then(
-                    lambda: gr.update(visible=True), outputs=[update_log]
+                self.musubi_process = subprocess.Popen(
+                    cmd, env=env, cwd=path, 
+                    creationflags=creationflags
                 )
 
-                git_update_btn.click(do_git_update, outputs=[update_log, update_log])
-            
-        except ImportError as e:
-            raise e
-        finally:
-            os.chdir(original_cwd)
+                for _ in range(20):
+                    time.sleep(0.5)
+                    try:
+                        with socket.create_connection(("127.0.0.1", self.musubi_port), timeout=1):
+                            break
+                    except:
+                        pass
+                
+                url = f"http://127.0.0.1:{self.musubi_port}"
+                return f'<iframe src="{url}" width="100%" height="1000px" style="border:none;"></iframe>'
+
+            except Exception as e:
+                traceback.print_exc()
+                return f"<div style='color:red'>Error starting Musubi Tuner: {str(e)}</div>"
+
+        self.load_trigger.change(
+            fn=launch_interface,
+            inputs=[self.load_trigger, path_state],
+            outputs=[interface_html]
+        )
+        
+        refresh_btn.click(
+            fn=lambda: True, outputs=[self.load_trigger]
+        )
 
     def on_tab_select(self, state):
         self.acquire_gpu(state)
+        return True
 
     def on_tab_deselect(self, state):
         self.release_gpu(state)
